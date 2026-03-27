@@ -1,6 +1,6 @@
-# PS2 Cardiac Electrophysiology Analysis
+# EGM Analyzer
 
-A Python-based application for analyzing cardiac electrophysiology data from high-density mapping systems (Ensite Precision and Ensite X).
+A Modular Software Platform for Visualization and Analysis of Cardiac Electrograms
 
 ## Features
 
