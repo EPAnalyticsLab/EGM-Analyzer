@@ -118,7 +118,7 @@ Developed for high-density cardiac electrophysiology mapping analysis.
 ## Repository Metadata
 
 - 'Version': v1
-- 'Repository': https://github.com/seciuk/PS2-cardiac-electrophysiology
+- 'Repository': https://github.com/EPAnalyticsLab/EGM-Analyzer
 - 'License': MIT License
 - 'Language': Python
 - 'Dependencies': See `requirements.txt`
