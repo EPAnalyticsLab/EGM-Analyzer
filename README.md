@@ -108,12 +108,31 @@ Tested on a standard laptop (Intel Core i7, 16 GB RAM):
 
 ## Testing & CI
 
-Unit tests covering core signal processing functions (LAT estimation, Vpp computation for unipolar/bipolar/omnipolar, and ROR) are located under `/tests/`. A GitHub Actions CI workflow runs these tests automatically on each push and pull request.
+Unit tests covering the core signal processing functions are located under `/tests/`. A GitHub Actions CI workflow (`.github/workflows/ci.yml`) runs these tests automatically on every push and pull request.
+
+### What is tested
+
+| Module | Functions covered |
+|---|---|
+| LAT estimation | `compute_lat` — dip detection, NaN handling, edge cases |
+| Voltage (unipolar/bipolar) | `compute_vpp` — amplitude, NaN masking, signed signals |
+| Omnipolar | `compute_omnipolar` — triangular and cross configurations, rotation, energy preservation |
+| Rate-of-Rise | `compute_ror` — ratio computation, zero-residue handling |
+| Bandpass filter | `bandpass_filter` — passband preservation (50 Hz), stopband rejection (500 Hz), DC removal |
+| Notch filter | `notch_filter` — mains rejection (50 Hz), passband preservation (30 Hz, 80 Hz) |
+
+### Run tests locally
+
+Install the test dependencies (lighter than the full app stack) and run pytest from the repository root:
 
 ```bash
-# Run tests locally
-pytest tests/
+pip install pytest numpy scipy
+pytest tests/ -v
 ```
+
+### CI pipeline
+
+The workflow is defined in `.github/workflows/ci.yml` and triggers on every push and pull request to any branch. It runs on `ubuntu-latest` with Python 3.11 and installs only `pytest`, `numpy`, and `scipy` — no Dash server is required.
 
 ## Citation
 If you use this software in your research, please cite:
@@ -144,4 +163,4 @@ Several MATLAB-based toolboxes for EGM analysis exist in the literature (Narayan
 - `Documentation`: This README
 - `Sample Data`: `/sample_data/`
 - `Tests`: `/tests/`
-- `CI`: GitHub Actions
+- `CI`: GitHub Actions (`.github/workflows/ci.yml`)
