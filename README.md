@@ -1,101 +1,160 @@
 # EGM Analyzer
-A Modular Software Platform for Visualization and Analysis of Cardiac Electrograms
+
+A modular software platform for the visualisation and analysis of cardiac electrograms.
+
+[![tests](https://github.com/EPAnalyticsLab/EGM-Analyzer/actions/workflows/tests.yml/badge.svg)](https://github.com/EPAnalyticsLab/EGM-Analyzer/actions/workflows/tests.yml)
+[![Python ≥ 3.9](https://img.shields.io/badge/python-%E2%89%A53.9-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## Features
-- **3D Geometry Visualization**: Interactive rendering of cardiac chamber geometry with color-mapped metrics
-- **Signal Processing**: Unipolar, bipolar, and omnipolar signal analysis with customizable filtering
-- **Voltage Mapping**: Local activation time (LAT), voltage peak-to-peak (Vpp), and rate-of-rise (ROR) computation
-- **Omnipolar Technology**: Triangular and cross configurations for direction-independent voltage measurement
-- **Temporal Interval Selection**: Focused analysis on specific signal segments
-- **Data Export**: CSV export of all computed metrics; PNG export of signal visualizations and 3D mesh screenshots
-- **Missing Electrode Estimation**: IDW-based interpolation for incomplete electrode arrays
-- **Accessibility**: Colorblind-safe colormaps (viridis) and keyboard shortcuts for common operations (zoom, pan, rotate)
+
+- **3D geometry visualisation**: interactive rendering of cardiac chamber geometry with colour-mapped parameter overlays.
+- **Signal processing**: unipolar, bipolar, and omnipolar analysis with band-pass and notch filtering.
+- **Voltage and timing maps**: LAT (local activation time), Vpp (unipolar / bipolar / omnipolar), and ROR (residue-to-omnipole ratio).
+- **Omnipolar electrograms**: triangular (L-shape) and cross clique configurations.
+- **Temporal interval selection**: focus analysis on a user-defined activation window.
+- **Data export**: parameter maps as **CSV** and current figures as **PNG**, bundled into a single ZIP archive.
+- **Accessibility**: perceptually uniform, colourblind-safe colormap (`viridis`) for all parameter maps by default.
+- **Cross-platform**: fully browser-based Dash interface; identical behaviour on Windows, macOS, and Linux. No OS-native windowing toolkit is required.
 
 ## Installation
 
 ### Requirements
-- Python 3.9+
-- Dependencies listed in `requirements.txt`
-- Tested on: Windows 10/11, macOS 12 (Monterey), and Ubuntu 22.04 LTS
 
-> **Note (macOS):** Minor differences in Tkinter rendering may occur (e.g., menu bar placement).
+- Python ≥ 3.9
+- Dependencies listed in `requirements.txt`
+- Tested on Windows 10 / 11, macOS 12 (Monterey), and Ubuntu 22.04 LTS
 
 ### Setup
+
 ```bash
-# Clone the repository
 git clone https://github.com/EPAnalyticsLab/EGM-Analyzer.git
 cd EGM-Analyzer
-
-# Install dependencies
 pip install -r requirements.txt
+```
+
+For development (tests and validation suite):
+
+```bash
+pip install -r requirements-dev.txt
 ```
 
 ## Usage
 
 ### 1. Start the application
+
 ```bash
 python main.py
 ```
-Then open your browser at: `http://localhost:8050`
+
+Then open `http://localhost:8050` in your browser.
 
 ### 2. Load data
 
-**For Ensite Precision:**
-1. Select `Ensite Precision` from the System dropdown
-2. Click `Load Geometry` → upload your `.html` or `.xml` geometry file
-3. Click `Load Signals` → upload your `DxL_*.csv` signal files
+**Option A — Sample dataset (recommended for first use):**
+1. Click `💾 Load Session (.pkl)` and pick `sample_data/sample_session.pkl`.
+2. A `4 × 4` synthetic freeze group named `374` is now available in the dropdown.
 
-**For Ensite X:**
-1. Select `Ensite X` from the System dropdown
-2. Enter the full file paths:
-   - `Wave_rov.csv` (roving signals)
-   - `Map_LAT_uni.csv` (coordinates and LAT data)
-3. Click `Load`
+**Option B — EnSite Precision:**
+1. Select `EnSite Precision` from the system dropdown.
+2. Click `Load Geometry` → upload your `.html` or `.xml` geometry file.
+3. Click `Load Signals` → upload your `DxL_*.csv` signal files.
 
-Optional: Enable `Estimate missing electrodes` to interpolate signals for incomplete grids.
+**Option C — EnSite X:**
+1. Select `EnSite X` from the system dropdown.
+2. Enter the full file paths for `Wave_rov.csv` and `Map_LAT_uni.csv`.
+3. Click `Load`.
 
-**Sample dataset:** A minimal anonymized dataset (geometry in XML format and electrogram recordings in CSV format) is available under `/sample_data/`. It is sufficient to reproduce all visualizations shown in the manuscript figures and serves as a tutorial starting point.
+> Optional: enable `Estimate missing electrodes` to interpolate signals for incomplete grids.
 
-### 3. Analyze signals
-- Select a `freeze group` from the dropdown
-- Click map buttons to visualize:
-  - `LAT`: Local activation time
-  - `Vpp Uni`: Unipolar voltage peak-to-peak
-  - `Vpp Bip`: Bipolar voltage (horizontal/vertical)
-  - `Vpp Omni`: Omnipolar voltage (triangular or cross)
-  - `ROR`: Rate-of-rise (residue/omnipolar ratio)
-- Adjust `colorbar range` (manual or auto)
-- Toggle `spatial interpolation` and adjust σ for smoothing
+### 3. Analyse signals
 
-> **Note on LAT estimation:** The minimum-derivative LAT estimator may be unreliable for fractionated or multi-component electrograms. In such cases, use the temporal interval selection (see below) to manually restrict computation to a user-specified activation window.
+- Select a freeze group from the dropdown.
+- Click any map button to render a parameter map on the 3D mesh:
+  - `LAT` — Local activation time.
+  - `Vpp Uni` — Unipolar peak-to-peak voltage.
+  - `Vpp Bip` — Bipolar voltage (horizontal/vertical).
+  - `Vpp Omni` — Omnipolar voltage (triangular or cross clique).
+  - `ROR` — Residue-to-Omnipole ratio.
+- Adjust the colour-bar range (manual or auto) and toggle spatial smoothing (σ).
 
-### 4. Signal visualization panels
-- `Bottom-left`: Unipolar signals with filtering (bandpass 2–100 Hz, notch 50 Hz)
-- `Top-right`: Bipolar signals (horizontal/vertical) + custom bipolar pairs
-- `Bottom-right`: Omnipolar signals, residue, and bipolar loops with propagation vectors
+> **Note on LAT.** The minimum-derivative LAT estimator may be unreliable for fractionated or multi-component electrograms. In such cases, use the temporal interval selection (below) to restrict the computation to a user-defined activation window.
+
+### 4. Signal visualisation panels
+
+- **Bottom-left**: unipolar signals with optional filtering (band-pass 2–100 Hz, notch 50 Hz).
+- **Top-right**: bipolar signals (horizontal/vertical) and custom bipolar pairs.
+- **Bottom-right**: omnipolar signals, residue, and bipolar loops with propagation vectors.
 
 ### 5. Temporal interval selection
-- Click `Select interval` to focus omnipolar analysis on a specific time window
-- Drag-select on the preview graph or enter `t₀` and `t₁` manually
-- Click `Apply` to update all omnipolar plots
 
-### 6. Export data
-- Click `Export`
-- Select metrics to export:
-  - Vpp Unipolar / Bipolar / Omnipolar
-  - Signals Unipolar / Bipolar / Omnipolar
-- Click `Export selected` → downloads metrics as **CSV** files; signal visualizations and 3D screenshots as **PNG** files
+- Click `Select interval`.
+- Drag-select on the preview graph, or enter `t₀` and `t₁` manually (in ms).
+- Click `Apply` to update every omnipolar plot.
 
-## File Formats
+### 6. Export
+
+Click `📤 Export` and tick the items you want:
+
+| Option | Format | Content |
+|---|---|---|
+| `Vpp Unipolar / Bipolar / Omnipolar + ROR` | CSV | One row per electrode/clique with metric value |
+| `Signals Unipolar / Bipolar / Omnipolar` | CSV | One row per electrode/clique with full time-series |
+| `3D mesh screenshot` | PNG | Currently rendered 3D mesh |
+| `Signal panels` | PNG | Unipolar, bipolar, omnipolar, and loop panels |
+
+All selected outputs are packaged into a single ZIP archive (`egm_analyzer_export.zip`). PNG export requires the `kaleido` package (installed automatically through `requirements.txt`).
+
+## Repository layout
+
+```
+EGM-Analyzer/
+├── main.py                       # Dash application
+├── signal_processing.py          # Core algorithmic primitives (LAT, Vpp, omnipolar, ROR)
+├── import_data/                  # EnSite Precision / EnSite X importers
+├── utils/filters.py              # Band-pass and notch filters
+├── tests/                        # pytest unit tests (run on every push/PR)
+├── validation/                   # Synthetic validation suite (analytical ground truth)
+├── sample_data/                  # Anonymised sample dataset reproducing manuscript figures
+├── .github/workflows/tests.yml   # GitHub Actions CI (Linux + macOS + Windows × Python 3.9–3.12)
+├── requirements.txt              # Runtime dependencies
+└── requirements-dev.txt          # Test / CI dependencies
+```
+
+## Testing and continuous integration
+
+Unit tests live under `tests/` and cover the core signal-processing
+functions (LAT, Vpp for unipolar / bipolar / omnipolar, omnipolar
+orientation-independence, and ROR). The synthetic validation suite
+under `validation/` confronts every metric with a closed-form ground
+truth (see `validation/README.md` for tolerances).
+
+```bash
+# Run the unit tests
+pytest tests/
+
+# Run the synthetic validation suite
+python validation/run_validation.py
+```
+
+A GitHub Actions workflow (`.github/workflows/tests.yml`) executes both
+on every push and pull request across `ubuntu-latest`, `macos-latest`,
+and `windows-latest` for Python 3.9 – 3.12.
+
+## File formats
 
 ### Input
-- `Geometry`: `.html` (Plotly mesh) or `.xml` (DIF format)
-- `Signals (Precision)`: `DxL_*.csv` files exported from Ensite Precision
-- `Signals (Ensite X)`: `Wave_rov.csv` + `Map_LAT_uni.csv`
+
+- **Geometry**: `.html` (Plotly mesh) or `.xml` (DIF format).
+- **Signals (EnSite Precision)**: `DxL_*.csv` files exported from the system.
+- **Signals (EnSite X)**: `Wave_rov.csv` + `Map_LAT_uni.csv`.
+- **Session resumption**: `.pkl` file produced by a previous run.
 
 ### Output
-- `CSV`: Computed electrophysiological parameter maps (LAT, Vpp, ROR, etc.)
-- `PNG`: Signal visualizations and 3D mesh screenshots
+
+- **CSV**: one file per requested parameter map or signal block.
+- **PNG**: one file per requested figure panel.
+- All bundled into `egm_analyzer_export.zip`.
 
 ## Performance
 
@@ -103,64 +162,34 @@ Tested on a standard laptop (Intel Core i7, 16 GB RAM):
 
 | Dataset size | Load + render time | RAM usage |
 |---|---|---|
-| ~3,500 sites, 1 s @ 2 kHz | 4–8 seconds | ~600 MB |
-| >10,000 sites | Interactive responsiveness begins to degrade | — |
-
-## Testing & CI
-
-Unit tests covering the core signal processing functions are located under `/tests/`. A GitHub Actions CI workflow (`.github/workflows/ci.yml`) runs these tests automatically on every push and pull request.
-
-### What is tested
-
-| Module | Functions covered |
-|---|---|
-| LAT estimation | `compute_lat` — dip detection, NaN handling, edge cases |
-| Voltage (unipolar/bipolar) | `compute_vpp` — amplitude, NaN masking, signed signals |
-| Omnipolar | `compute_omnipolar` — triangular and cross configurations, rotation, energy preservation |
-| Rate-of-Rise | `compute_ror` — ratio computation, zero-residue handling |
-| Bandpass filter | `bandpass_filter` — passband preservation (50 Hz), stopband rejection (500 Hz), DC removal |
-| Notch filter | `notch_filter` — mains rejection (50 Hz), passband preservation (30 Hz, 80 Hz) |
-
-### Run tests locally
-
-Install the test dependencies (lighter than the full app stack) and run pytest from the repository root:
-
-```bash
-pip install pytest numpy scipy
-pytest tests/ -v
-```
-
-### CI pipeline
-
-The workflow is defined in `.github/workflows/ci.yml` and triggers on every push and pull request to any branch. It runs on `ubuntu-latest` with Python 3.11 and installs only `pytest`, `numpy`, and `scipy` — no Dash server is required.
+| ≈ 3 500 sites, 1 s @ 2 kHz | 4 – 8 s | ≈ 600 MB |
+| > 10 000 sites | Interactive responsiveness begins to degrade | — |
 
 ## Citation
-If you use this software in your research, please cite:
+
 ```
 [to be added upon publication]
 ```
 
 ## License
-MIT License
+
+MIT License. See `LICENSE`.
+
+## Acknowledgements
+
+This platform builds on well-established electrophysiology methods —
+peak-to-peak amplitude, omnipolar electrogram computation, and LAT
+estimation — that have been extensively validated in the cardiac
+electrophysiology literature. EGM Analyzer integrates these methods
+into a single interactive Python-based platform.
+
+Several MATLAB-based toolboxes for EGM analysis (Narayan, Vigmond, and
+collaborating groups) offer powerful analysis capabilities and inspired
+parts of this work. EGM Analyzer, being fully Python-based and
+open-source under the MIT License, removes the dependency on a
+proprietary MATLAB licence and lowers the barrier to access for the
+broader research community.
 
 ## Contact
-For questions or support: [qepcontact@gmail.com]
 
-## Acknowledgments
-Developed for high-density cardiac electrophysiology mapping analysis.
-
-This platform builds on well-established electrophysiology methods (peak-to-peak amplitude, omnipolar computation, LAT estimation) that have been extensively validated in the cardiac electrophysiology literature. EGM Analyzer integrates these methods into a single interactive Python-based platform.
-
-Several MATLAB-based toolboxes for EGM analysis exist in the literature (Narayan, Vigmond, and collaborating groups) and offer powerful analysis capabilities. EGM Analyzer, being fully Python-based and open-source, does not require a proprietary license and is designed to lower the barrier to access for the broader research community.
-
-## Repository Metadata
-- `Version`: v1.0
-- `Repository`: https://github.com/EPAnalyticsLab/EGM-Analyzer
-- `License`: MIT License
-- `Language`: Python
-- `Versioning`: Git (GitHub)
-- `Dependencies`: See `requirements.txt`
-- `Documentation`: This README
-- `Sample Data`: `/sample_data/`
-- `Tests`: `/tests/`
-- `CI`: GitHub Actions (`.github/workflows/ci.yml`)
+`qepcontact@gmail.com`

@@ -17,6 +17,15 @@ from scipy.spatial import cKDTree
 
 from import_data.extract_dxl_data import extract_dxl_data
 from utils.filters import bandpass_filter, notch_filter
+# Core signal-processing primitives live in signal_processing.py so that the
+# unit tests under /tests/ and the validation scripts under /validation/ can
+# import them without spinning up the Dash app.
+from signal_processing import (
+    compute_lat,
+    compute_vpp,
+    compute_omnipolar,
+    label_to_grid,
+)
 
 GEOMETRY = None
 SIGNALS  = None
@@ -32,49 +41,29 @@ SIG_COL = "#000000"
 GEO_BG  = "#ffffff"
 GEO_GRID= "#aaaaaa"
 
-def compute_lat(signal):
-    s = signal.astype(float)
-    valid = np.isfinite(s)
-    if valid.sum() < 3:
-        return 0.0
-    # Work only on the finite segment
-    s_valid = s[valid]
-    grad = np.gradient(s_valid)
-    return float(np.where(valid)[0][np.argmin(grad)])
+# ──────────────────────────────────────────────────────────────────────────────
+# Colormaps. Defaults are perceptually uniform and colorblind-safe.
+#   - "viridis" for sequential metrics (LAT, Vpp, ROR)
+#   - "RdBu_r"  for divergent bipolar traces (zero-centred)
+# Reviewer R1.16 (SoftwareX): the default colormap for 3D parameter maps must
+# be perceptually uniform and colorblind-safe. "jet", "rainbow" and "turbo"
+# are explicitly avoided here.
+# ──────────────────────────────────────────────────────────────────────────────
+CMAP_SEQUENTIAL = "Viridis"   # LAT, Vpp uni/bip/omni, ROR
+CMAP_DIVERGENT  = "RdBu_r"    # signed bipolar traces / electric field
 
-def compute_vpp(signal):
-    s = signal.astype(float)
-    valid = s[np.isfinite(s)]
-    if len(valid) == 0:
-        return 0.0
-    return float(valid.max() - valid.min())
+def compute_lat_legacy(signal):  # pragma: no cover — kept only as a reference
+    """Legacy in-line copy of :func:`signal_processing.compute_lat`. Unused."""
+    return compute_lat(signal)
 
-def compute_omnipolar(bip_x, bip_y):
-    pts   = np.column_stack([bip_x, bip_y])
-    dists = np.linalg.norm(pts, axis=1)
-    idx   = np.argmax(dists)
-    direction = pts[idx].copy()
-    norm  = np.linalg.norm(direction)
-    if norm < 1e-12:
-        return bip_x, bip_y, 0.0, np.array([0.0, 0.0])
-    direction /= norm
-    c, s = direction[0], direction[1]
-    R = np.array([[c, s], [-s, c]])
-    rotated  = (R @ pts.T).T
-    angle    = math.degrees(math.atan2(s, c))
-    return rotated[:,0], rotated[:,1], angle, direction * dists[idx]
 
 def get_filter_func(fv, fs):
     if fv == "bp-2-100": return lambda x: bandpass_filter(x, 2, 100, fs)
     if fv == "notch-50": return lambda x: notch_filter(x, 50, fs)
     return lambda x: x
 
-COORDS_RE = re.compile(r"([A-D])([1-4])")
 
-def label_to_grid(label):
-    m = COORDS_RE.search(str(label))
-    if not m: return None, None
-    return ord(m.group(1)) - ord("A"), int(m.group(2)) - 1
+COORDS_RE = re.compile(r"([A-D])([1-4])")
 
 def apply_interval_to_rov(rov, interval, signals):
     """Truncate signal columns to [t0_ms, t1_ms].
@@ -320,6 +309,11 @@ app.layout = dbc.Container(fluid=True,
                 value=[], id="estimate-missing-toggle", inline=True,
                 style={"fontSize":"12px","color":MUTED}),
         ],width="auto",style={"paddingTop":"6px"}),
+        dbc.Col(dcc.Loading(type="circle",color="#0969da",children=[
+            dcc.Upload(
+                dbc.Button("💾 Load Session (.pkl)",color="warning",outline=True,size="sm"),
+                id="upload-pkl",multiple=False),
+        ]),width="auto",style={"paddingTop":"2px"}),
         dbc.Col([
             dbc.Button("📤 Export",id="btn-export-open",n_clicks=0,
                        size="sm",color="secondary",outline=True),
@@ -331,18 +325,25 @@ app.layout = dbc.Container(fluid=True,
 
     # Export modal
     dbc.Modal([
-        dbc.ModalHeader(dbc.ModalTitle("📤 Export data to Excel")),
+        dbc.ModalHeader(dbc.ModalTitle("📤 Export data and figures")),
         dbc.ModalBody([
             dbc.Checklist(id="export-checklist",
                 options=[
-                    {"label":"Vpp Unipolar",     "value":"vpp_uni"},
-                    {"label":"Vpp Bipolar",       "value":"vpp_bip"},
-                    {"label":"Vpp Omnipolar",     "value":"vpp_omni"},
-                    {"label":"Signals Unipolar",  "value":"sig_uni"},
-                    {"label":"Signals Bipolar",   "value":"sig_bip"},
-                    {"label":"Signals Omnipolar", "value":"sig_omni"},
+                    {"label":"Vpp Unipolar (CSV)",     "value":"vpp_uni"},
+                    {"label":"Vpp Bipolar (CSV)",      "value":"vpp_bip"},
+                    {"label":"Vpp Omnipolar + ROR (CSV)", "value":"vpp_omni"},
+                    {"label":"Signals Unipolar (CSV)", "value":"sig_uni"},
+                    {"label":"Signals Bipolar (CSV)",  "value":"sig_bip"},
+                    {"label":"Signals Omnipolar (CSV)","value":"sig_omni"},
+                    {"label":"3D mesh screenshot (PNG)", "value":"fig_3d"},
+                    {"label":"Signal panels (PNG: uni / bip / omni)", "value":"fig_signals"},
                 ],
                 value=[], style={"fontSize":"13px"}),
+            html.Div("CSV files contain numeric data; PNG files are static "
+                     "screenshots of the currently displayed figures. All "
+                     "selected outputs are bundled into a single ZIP archive.",
+                     style={"marginTop":"8px","fontSize":"11px","color":MUTED,
+                            "fontStyle":"italic"}),
             html.Div(id="export-status",
                      style={"marginTop":"8px","fontSize":"12px","color":MUTED}),
         ]),
@@ -864,6 +865,43 @@ def load_signals(contents, filenames, estimate_missing):
         import traceback; traceback.print_exc()
         return [], True, f"❌ {e}"
 
+# ── Load previous session (.pkl) via Dash upload ──────────────────────────────
+# The application is a fully browser-based Dash app and does NOT depend on any
+# OS-native windowing toolkit. Session resumption is handled entirely through
+# the standard dcc.Upload component, ensuring identical behaviour on Windows,
+# macOS, and Linux.
+@app.callback(
+    Output("freeze-group-select","options",  allow_duplicate=True),
+    Output("freeze-group-select","disabled", allow_duplicate=True),
+    Output("load-status","children",         allow_duplicate=True),
+    Input("upload-pkl","contents"),
+    State("upload-pkl","filename"),
+    prevent_initial_call=True,
+)
+def load_pkl_session(contents, filename):
+    global SIGNALS, GEOMETRY
+    if not contents:
+        return no_update, no_update, no_update
+    try:
+        import base64 as _b64, io, pickle
+        _, b64data = contents.split(",", 1)
+        raw = _b64.b64decode(b64data)
+        data = pickle.load(io.BytesIO(raw))
+        if isinstance(data, dict) and "signals" in data:
+            if "geometry" in data and data["geometry"] is not None:
+                GEOMETRY = data["geometry"]
+            SIGNALS = data["signals"]
+        else:
+            SIGNALS = data
+        dt = SIGNALS["data_table"]
+        groups = dt["pt number"].unique()
+        opts = [{"label": str(g), "value": g} for g in groups]
+        return opts, False, f"✅ Session loaded from {filename}: {len(groups)} freeze groups"
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return [], True, f"❌ PKL load error: {e}"
+
+
 # ── Omni type selector + video controls visibility ────────────────────────────
 @app.callback(
     Output("omni-type-container","style"),
@@ -1027,7 +1065,7 @@ def render_geo(map_type, cbar_range, group_id, interp_toggle, sigma, omni_type, 
         ez=dt["roving z"].astype(float).values
         pts_xyz=np.column_stack([ex,ey,ez])
 
-        values=[]; colorscale="RdBu_r"; title=""
+        values=[]; colorscale=CMAP_DIVERGENT; title=""
 
         if map_type=="lat":
             for idx in dt.index:
@@ -1036,13 +1074,13 @@ def render_geo(map_type, cbar_range, group_id, interp_toggle, sigma, omni_type, 
             # Convert sample index to ms at FS=2000 Hz
             fs_hz = float(SIGNALS["data_table"]["Sample rate"].dropna().unique()[0])
             values = [v * 1000.0/fs_hz if np.isfinite(v) else np.nan for v in values]
-            title,colorscale="LAT (ms)","jet"
+            title,colorscale="LAT (ms)",CMAP_SEQUENTIAL
 
         elif map_type=="vpp_uni":
             for idx in dt.index:
                 try: values.append(compute_vpp(filt(get_signal_array(rov.loc[idx]))))
                 except: values.append(np.nan)
-            title,colorscale="Vpp Unipolar (mV)","rainbow_r"
+            title,colorscale="Vpp Unipolar (mV)",CMAP_SEQUENTIAL
 
         elif map_type=="vpp_bip":
             for idx in dt.index:
@@ -1053,7 +1091,7 @@ def render_geo(map_type, cbar_range, group_id, interp_toggle, sigma, omni_type, 
                     vpps=[compute_vpp(s) for k,s in {**h,**v}.items() if lbl in k]
                     values.append(max(vpps) if vpps else np.nan)
                 except: values.append(np.nan)
-            title,colorscale="Vpp Bipolar max (mV)","rainbow_r"
+            title,colorscale="Vpp Bipolar max (mV)",CMAP_SEQUENTIAL
 
         elif map_type=="vpp_omni":
             for idx in dt.index:
@@ -1069,7 +1107,7 @@ def render_geo(map_type, cbar_range, group_id, interp_toggle, sigma, omni_type, 
                         for d in cross_od.values(): vpps.append(d["vpp_omni"])
                     values.append(max(vpps) if vpps else np.nan)
                 except: values.append(np.nan)
-            title=f"Vpp Omnipolar ({omni_type}) (mV)"; colorscale="rainbow_r"
+            title=f"Vpp Omnipolar ({omni_type}) (mV)"; colorscale=CMAP_SEQUENTIAL
 
         elif map_type=="ror":
             for idx in dt.index:
@@ -1084,7 +1122,7 @@ def render_geo(map_type, cbar_range, group_id, interp_toggle, sigma, omni_type, 
                         if v["vpp_omni"]>1e-9: rors.append(v["vpp_res"]/v["vpp_omni"])
                     values.append(np.nanmean(rors) if rors else np.nan)
                 except: values.append(np.nan)
-            title="ROR (residue/omnipolar)"; colorscale="turbo"
+            title="ROR (residue/omnipolar)"; colorscale=CMAP_SEQUENTIAL
         else:
             return build_geometry_figure(verts,faces,extra)
 
@@ -1734,7 +1772,7 @@ def precompute_video(n_clicks, interp_toggle, sigma, cmin, cmax, speed_val):
                 go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
                           i=faces["v1"], j=faces["v2"], k=faces["v3"],
                           intensity=vc0, intensitymode="vertex",
-                          colorscale="rdbu", cmin=vmin, cmax=vmax,
+                          colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
                           opacity=0.90, showscale=True,
                           colorbar=colorbar_cfg, showlegend=False),
             ]
@@ -1746,7 +1784,7 @@ def precompute_video(n_clicks, interp_toggle, sigma, cmin, cmax, speed_val):
                           showlegend=False, showscale=False),
                 go.Scatter3d(x=ex, y=ey, z=ez, mode="markers",
                              marker=dict(size=7, color=vals0.tolist(),
-                                         colorscale="rdbu", cmin=vmin, cmax=vmax,
+                                         colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
                                          colorbar=colorbar_cfg),
                              showlegend=False),
             ]
@@ -1770,7 +1808,7 @@ def precompute_video(n_clicks, interp_toggle, sigma, cmin, cmax, speed_val):
                     go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
                               i=faces["v1"], j=faces["v2"], k=faces["v3"],
                               intensity=vc.tolist(), intensitymode="vertex",
-                              colorscale="rdbu", cmin=vmin, cmax=vmax,
+                              colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
                               opacity=0.90, showscale=True,
                               colorbar=colorbar_cfg, showlegend=False),
                 ]
@@ -1782,7 +1820,7 @@ def precompute_video(n_clicks, interp_toggle, sigma, cmin, cmax, speed_val):
                               showlegend=False, showscale=False),
                     go.Scatter3d(x=ex, y=ey, z=ez, mode="markers",
                                  marker=dict(size=7, color=vals_f.tolist(),
-                                             colorscale="rdbu", cmin=vmin, cmax=vmax,
+                                             colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
                                              colorbar=colorbar_cfg),
                                  showlegend=False),
                 ]
@@ -1898,134 +1936,216 @@ def toggle_export_modal(n_open, n_close, is_open):
     return not is_open
 
 
-# ── Export to Excel ────────────────────────────────────────────────────────────
+# ── Export to CSV + PNG (bundled into a ZIP archive) ──────────────────────────
+# Reviewer R1.17 / R2.8 (SoftwareX): export formats must be explicit. Parameter
+# maps are written as CSV; figures are exported as PNG via Plotly + kaleido.
+# All selected outputs are packaged into a single ZIP archive for convenience.
 @app.callback(
     Output("download-export","data"),
     Output("export-status","children"),
     Input("btn-export-run","n_clicks"),
     State("export-checklist","value"),
+    State("geo-graph","figure"),
+    State("uni-graph","figure"),
+    State("bip-graph","figure"),
+    State("omni-signals-graph","figure"),
+    State("omni-loops-graph","figure"),
     prevent_initial_call=True,
 )
-def run_export(n_clicks, selected):
+def run_export(n_clicks, selected, fig_geo, fig_uni, fig_bip,
+               fig_omni_sig, fig_omni_loops):
     if not n_clicks or not selected:
         return no_update, "Select at least one option"
     if SIGNALS is None:
         return no_update, "❌ No signals loaded"
+
     try:
-        import io as _io, zipfile as _zip
+        import io as _io
+        import zipfile as _zip
+
         dt  = SIGNALS["data_table"]
         rov = SIGNALS["signals"]["rov trace"]
 
         def sig_cols(rov_row):
-            return rov_row.drop(["label","x","y"],errors="ignore").astype(float).values
+            return rov_row.drop(["label","x","y"], errors="ignore").astype(float).values
 
-        # Gather coords
-        xs = dt["roving x"].astype(float).values
-        ys = dt["roving y"].astype(float).values
-        zs = dt["roving z"].astype(float).values
-        labels = rov["label"].astype(str).values
-        groups = dt["pt number"].values
+        # Build aligned arrays using dt.index as the source of truth
+        # so positional index i always matches rov.loc[idx]
+        dt_aligned  = dt.copy()
+        rov_aligned = rov.loc[dt_aligned.index]
+
+        xs     = dt_aligned["roving x"].astype(float).values
+        ys     = dt_aligned["roving y"].astype(float).values
+        zs     = dt_aligned["roving z"].astype(float).values
+        labels = rov_aligned["label"].astype(str).values
+        groups = dt_aligned["pt number"].values
         filt_fn = lambda s: s
 
-        buf = _io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # ────────────────────────────────────────────────────────────────
+        # Build CSV/PNG payloads in memory
+        # ────────────────────────────────────────────────────────────────
+        csv_files = {}   # filename -> bytes
+        png_files = {}   # filename -> bytes
+        report    = []   # short tag per produced output
 
-            if "vpp_uni" in selected:
-                rows = []
-                for i, idx in enumerate(dt.index):
-                    try:
-                        v = compute_vpp(sig_cols(rov.loc[idx]))
-                    except: v = np.nan
-                    rows.append({"Group":groups[i],"Label":labels[i],
-                                 "x":xs[i],"y":ys[i],"z":zs[i],"Vpp_uni(mV)":v})
-                pd.DataFrame(rows).to_excel(writer, sheet_name="Vpp_Unipolar", index=False)
+        # ── Parameter maps (CSV) ───────────────────────────────────────
+        if "vpp_uni" in selected:
+            rows = []
+            for i, idx in enumerate(dt_aligned.index):
+                try:
+                    v = compute_vpp(sig_cols(rov_aligned.loc[idx]))
+                except Exception:
+                    v = np.nan
+                rows.append({
+                    "Group": groups[i], "Label": labels[i],
+                    "x": xs[i], "y": ys[i], "z": zs[i],
+                    "Vpp_uni(mV)": v,
+                })
+            csv_files["vpp_unipolar.csv"] = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
+            report.append("Vpp_uni")
 
-            if "vpp_bip" in selected:
-                rows = []
-                for g in dt["pt number"].unique():
-                    gmask  = dt["pt number"]==g
-                    g_dt   = dt[gmask]
-                    g_rov  = rov.loc[g_dt.index]
-                    metrics= compute_group_metrics(g_rov, filt_fn)
-                    h,v_b,_= compute_bipolars(metrics)
-                    for lbl, sig in {**h,**v_b}.items():
-                        rows.append({"Group":g,"Label":lbl,"Vpp_bip(mV)":compute_vpp(sig)})
-                pd.DataFrame(rows).to_excel(writer, sheet_name="Vpp_Bipolar", index=False)
+        if "vpp_bip" in selected:
+            rows = []
+            for g in dt_aligned["pt number"].unique():
+                gmask   = dt_aligned["pt number"] == g
+                g_rov   = rov_aligned.loc[dt_aligned[gmask].index]
+                metrics = compute_group_metrics(g_rov, filt_fn)
+                h, v_b, _ = compute_bipolars(metrics)
+                for lbl, sig in {**h, **v_b}.items():
+                    rows.append({"Group": g, "Label": lbl, "Vpp_bip(mV)": compute_vpp(sig)})
+            csv_files["vpp_bipolar.csv"] = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
+            report.append("Vpp_bip")
 
-            if "vpp_omni" in selected:
-                rows = []
-                for g in dt["pt number"].unique():
-                    gmask = dt["pt number"]==g
-                    g_dt  = dt[gmask]
-                    g_rov = rov.loc[g_dt.index]
-                    metrics= compute_group_metrics(g_rov, filt_fn)
-                    _,_,lmap= compute_bipolars(metrics)
-                    tri_od, cross_od = compute_omnipoles_for_group(metrics,lmap)
-                    for k,v in {**tri_od,**cross_od}.items():
-                        cfg_name = k[0] if isinstance(k,tuple) and len(k)==3 else "cross"
-                        rows.append({"Group":g,"Config":cfg_name,
-                                     "Labels":str(v["labels"]),
-                                     "Vpp_omni(mV)":v["vpp_omni"],
-                                     "ROR":v["vpp_res"]/v["vpp_omni"] if v["vpp_omni"]>1e-9 else np.nan})
-                pd.DataFrame(rows).to_excel(writer, sheet_name="Vpp_Omnipolar", index=False)
+        if "vpp_omni" in selected:
+            rows = []
+            for g in dt_aligned["pt number"].unique():
+                gmask   = dt_aligned["pt number"] == g
+                g_rov   = rov_aligned.loc[dt_aligned[gmask].index]
+                metrics = compute_group_metrics(g_rov, filt_fn)
+                _, _, lmap = compute_bipolars(metrics)
+                tri_od, cross_od = compute_omnipoles_for_group(metrics, lmap)
+                for k, v in {**tri_od, **cross_od}.items():
+                    cfg_name = k[0] if isinstance(k, tuple) and len(k) == 3 else "cross"
+                    rows.append({
+                        "Group": g, "Config": cfg_name,
+                        "Labels": str(v["labels"]),
+                        "Vpp_omni(mV)": v["vpp_omni"],
+                        "ROR": v["vpp_res"] / v["vpp_omni"] if v["vpp_omni"] > 1e-9 else np.nan,
+                    })
+            csv_files["vpp_omnipolar_ROR.csv"] = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
+            report.append("Vpp_omni+ROR")
 
-            if "sig_uni" in selected:
-                sig_data = {"Group":groups,"Label":labels,
-                            "x":xs,"y":ys,"z":zs}
-                sigs_arr = []
-                for idx in dt.index:
-                    try: sigs_arr.append(sig_cols(rov.loc[idx]))
-                    except: sigs_arr.append(np.full(100, np.nan))
-                n_samp = max(len(s) for s in sigs_arr)
+        # ── Raw signals (CSV, wide format: one row per electrode/clique) ─
+        if "sig_uni" in selected:
+            sigs_arr = []
+            for idx in dt_aligned.index:
+                try:
+                    sigs_arr.append(sig_cols(rov_aligned.loc[idx]))
+                except Exception:
+                    sigs_arr.append(np.full(100, np.nan))
+            n_samp = max(len(s) for s in sigs_arr) if sigs_arr else 0
+            sig_data = {
+                "Group": groups, "Label": labels,
+                "x": xs, "y": ys, "z": zs,
+            }
+            for j in range(n_samp):
+                sig_data[f"t{j}"] = [s[j] if j < len(s) else np.nan for s in sigs_arr]
+            csv_files["signals_unipolar.csv"] = pd.DataFrame(sig_data).to_csv(index=False).encode("utf-8")
+            report.append("Sig_uni")
+
+        if "sig_bip" in selected:
+            rows_meta = []
+            sigs_list = []
+            for g in dt_aligned["pt number"].unique():
+                gmask   = dt_aligned["pt number"] == g
+                g_rov   = rov_aligned.loc[dt_aligned[gmask].index]
+                metrics = compute_group_metrics(g_rov, filt_fn)
+                h, v_b, _ = compute_bipolars(metrics)
+                for lbl, sig in {**h, **v_b}.items():
+                    rows_meta.append({"Group": g, "Label": lbl})
+                    sigs_list.append(sig)
+            if sigs_list:
+                n_samp = max(len(s) for s in sigs_list)
+                df_meta = pd.DataFrame(rows_meta)
                 for j in range(n_samp):
-                    sig_data[f"t{j}"] = [s[j] if j<len(s) else np.nan for s in sigs_arr]
-                pd.DataFrame(sig_data).to_excel(writer, sheet_name="Signals_Unipolar", index=False)
+                    df_meta[f"t{j}"] = [s[j] if j < len(s) else np.nan for s in sigs_list]
+                csv_files["signals_bipolar.csv"] = df_meta.to_csv(index=False).encode("utf-8")
+                report.append("Sig_bip")
 
-            if "sig_bip" in selected:
-                rows_meta = []
-                sigs_list = []
-                for g in dt["pt number"].unique():
-                    gmask = dt["pt number"]==g
-                    g_dt  = dt[gmask]
-                    g_rov = rov.loc[g_dt.index]
-                    metrics= compute_group_metrics(g_rov, filt_fn)
-                    h,v_b,_= compute_bipolars(metrics)
-                    for lbl, sig in {**h,**v_b}.items():
-                        rows_meta.append({"Group":g,"Label":lbl})
-                        sigs_list.append(sig)
-                if sigs_list:
-                    n_samp = max(len(s) for s in sigs_list)
-                    df_meta = pd.DataFrame(rows_meta)
-                    for j in range(n_samp):
-                        df_meta[f"t{j}"] = [s[j] if j<len(s) else np.nan for s in sigs_list]
-                    df_meta.to_excel(writer, sheet_name="Signals_Bipolar", index=False)
+        if "sig_omni" in selected:
+            rows_meta = []
+            sigs_omni = []
+            sigs_res  = []
+            for g in dt_aligned["pt number"].unique():
+                gmask   = dt_aligned["pt number"] == g
+                g_rov   = rov_aligned.loc[dt_aligned[gmask].index]
+                metrics = compute_group_metrics(g_rov, filt_fn)
+                _, _, lmap = compute_bipolars(metrics)
+                tri_od, cross_od = compute_omnipoles_for_group(metrics, lmap)
+                for k, v in {**tri_od, **cross_od}.items():
+                    cfg_name = k[0] if isinstance(k, tuple) and len(k) == 3 else "cross"
+                    rows_meta.append({"Group": g, "Config": cfg_name, "Labels": str(v["labels"])})
+                    sigs_omni.append(v["omni"])
+                    sigs_res.append(v["residue"])
+            if sigs_omni:
+                n_samp = max(len(s) for s in sigs_omni)
+                df_o = pd.DataFrame(rows_meta)
+                for j in range(n_samp):
+                    df_o[f"omni_t{j}"] = [s[j] if j < len(s) else np.nan for s in sigs_omni]
+                    df_o[f"res_t{j}"]  = [s[j] if j < len(s) else np.nan for s in sigs_res]
+                csv_files["signals_omnipolar.csv"] = df_o.to_csv(index=False).encode("utf-8")
+                report.append("Sig_omni")
 
-            if "sig_omni" in selected:
-                rows_meta = []
-                sigs_omni = []
-                sigs_res  = []
-                for g in dt["pt number"].unique():
-                    gmask = dt["pt number"]==g
-                    g_dt  = dt[gmask]
-                    g_rov = rov.loc[g_dt.index]
-                    metrics= compute_group_metrics(g_rov, filt_fn)
-                    _,_,lmap= compute_bipolars(metrics)
-                    tri_od, cross_od = compute_omnipoles_for_group(metrics,lmap)
-                    for k,v in {**tri_od,**cross_od}.items():
-                        cfg_name = k[0] if isinstance(k,tuple) and len(k)==3 else "cross"
-                        rows_meta.append({"Group":g,"Config":cfg_name,"Labels":str(v["labels"])})
-                        sigs_omni.append(v["omni"])
-                        sigs_res.append(v["residue"])
-                if sigs_omni:
-                    n_samp = max(len(s) for s in sigs_omni)
-                    df_o = pd.DataFrame(rows_meta)
-                    for j in range(n_samp):
-                        df_o[f"omni_t{j}"] = [s[j] if j<len(s) else np.nan for s in sigs_omni]
-                        df_o[f"res_t{j}"]  = [s[j] if j<len(s) else np.nan for s in sigs_res]
-                    df_o.to_excel(writer, sheet_name="Signals_Omnipolar", index=False)
+        # ── Figures (PNG via Plotly + kaleido) ────────────────────────
+        figure_map = {
+            "fig_3d":  [("mesh_3d.png",        fig_geo)],
+            "fig_signals": [
+                ("signals_unipolar.png",   fig_uni),
+                ("signals_bipolar.png",    fig_bip),
+                ("signals_omnipolar.png",  fig_omni_sig),
+                ("bipolar_loops.png",      fig_omni_loops),
+            ],
+        }
+        kaleido_warning = None
+        for key, items in figure_map.items():
+            if key not in selected:
+                continue
+            for fname, fig_dict in items:
+                if not fig_dict:
+                    continue
+                try:
+                    fig_obj = go.Figure(fig_dict)
+                    png_bytes = fig_obj.to_image(format="png", scale=2)
+                    png_files[fname] = png_bytes
+                    report.append(fname.replace(".png", ""))
+                except Exception as e:
+                    # kaleido may not be installed locally; report once
+                    kaleido_warning = (
+                        "PNG export requires the `kaleido` package. "
+                        f"Install with `pip install -U kaleido`. ({e})"
+                    )
 
-        buf.seek(0)
-        return dcc.send_bytes(buf.read(),"ep_export.xlsx"), f"✅ Exported: {', '.join(selected)}"
+        # Nothing produced
+        if not csv_files and not png_files:
+            return no_update, (kaleido_warning or
+                               "Nothing exported — please select at least one option.")
+
+        # ── Bundle everything into a single ZIP ────────────────────────
+        buf = _io.BytesIO()
+        with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
+            for name, data in csv_files.items():
+                zf.writestr(name, data)
+            for name, data in png_files.items():
+                zf.writestr(name, data)
+
+        msg = f"✅ Exported: {', '.join(report)}"
+        if kaleido_warning and not png_files:
+            msg += f"  ⚠ {kaleido_warning}"
+
+        return (
+            dcc.send_bytes(buf.getvalue(), "egm_analyzer_export.zip"),
+            msg,
+        )
 
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -2033,4 +2153,9 @@ def run_export(n_clicks, selected):
 
 
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8050)
+    import sys, os
+    # Cross-platform: use app.run() (Dash >= 2.x) with host 0.0.0.0 for Docker/Linux compatibility
+    host = os.environ.get("DASH_HOST", "127.0.0.1")
+    port = int(os.environ.get("DASH_PORT", "8050"))
+    debug = "--debug" in sys.argv or os.environ.get("DASH_DEBUG", "0") == "1"
+    app.run(debug=debug, host=host, port=port)

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DIF version="1.0">
+  <Map name="sample_anonymised">
+    <Volume>
+      <Vertices>
+        <V x="-6.0000" y="-6.0000" z="0.0000"/>
+        <V x="15.0000" y="-6.0000" z="0.0000"/>
+        <V x="15.0000" y="15.0000" z="0.0000"/>
+        <V x="-6.0000" y="15.0000" z="0.0000"/>
+      </Vertices>
+      <Polygons>
+        <P v1="0" v2="1" v3="2"/>
+        <P v1="0" v2="2" v3="3"/>
+      </Polygons>
+    </Volume>
+  </Map>
+</DIF>
