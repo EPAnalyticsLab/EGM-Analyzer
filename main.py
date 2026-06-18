@@ -369,7 +369,6 @@ html.Div(
             dbc.Button("Vpp Bip",  id="btn-vpp-bip",  n_clicks=0,size="sm",color="primary",outline=True),
             dbc.Button("Vpp Omni", id="btn-vpp-omni", n_clicks=0,size="sm",color="primary",outline=True),
             dbc.Button("ROR",      id="btn-ror",       n_clicks=0,size="sm",color="primary",outline=True),
-            dbc.Button("🎬 Video", id="btn-video-map", n_clicks=0,size="sm",color="info",   outline=True),
             dbc.Button("Clear",    id="btn-clear-map", n_clicks=0,size="sm",color="danger",  outline=True),
         ],style={"marginBottom":"4px","flexWrap":"wrap"}),
 
@@ -477,32 +476,6 @@ html.Div(
                     id="electrode-grid-cells",children=[])
                 ]),
         ]),
-
-        html.Div(id="video-controls-container",
-            style={"display":"none","marginBottom":"4px","flexWrap":"wrap",
-                   "alignItems":"center","gap":"6px","fontSize":"11px"},
-            children=[
-                dbc.Button("▶",  id="btn-video-play",  n_clicks=0,size="sm",color="success",outline=True),
-                dbc.Button("⏸", id="btn-video-pause", n_clicks=0,size="sm",color="warning",outline=True),
-                dbc.Button("⏮", id="btn-video-reset", n_clicks=0,size="sm",color="secondary",outline=True),
-                lspan("Speed:"),
-                dbc.Select(id="video-speed",
-                    options=[{"label":"0.25×","value":"250"},{"label":"0.5×","value":"125"},
-                             {"label":"1×","value":"60"},{"label":"2×","value":"30"},{"label":"4×","value":"15"}],
-                    value="60",style={"width":"70px","fontSize":"11px"}),
-                lspan("Interp:"),
-                dbc.Checklist(options=[{"label":"","value":"interp"}],
-                    value=[],id="video-interp-toggle",inline=True),
-                lspan("σ:"),
-                html.Div(dcc.Slider(id="video-sigma",min=0.5,max=10.0,step=0.5,value=2.0,
-                    tooltip={"placement":"top","always_visible":False}),style={"width":"80px"}),
-                lspan("cmin:"),
-                dcc.Input(id="video-cmin",type="number",value=-3.0,style={**INP,"width":"50px","fontSize":"11px"}),
-                lspan("cmax:"),
-                dcc.Input(id="video-cmax",type="number",value=3.0,style={**INP,"width":"50px","fontSize":"11px"}),
-                dbc.Button("⚙",id="btn-video-compute",n_clicks=0,size="sm",color="info",outline=True),
-                html.Span(id="video-compute-status",style={"fontSize":"10px","color":MUTED}),
-            ]),
 
         dcc.Loading(type="circle", color="#0969da", children=[
         dcc.Graph(id="geo-graph",figure=EMPTY_FIG,
@@ -660,8 +633,6 @@ html.Div(
     ], id="omni-interval-modal", is_open=False, size="xl"),
 
     dcc.Store(id="store-custom-bips",data=[]),
-    dcc.Store(id="store-video-state",data={"playing":False,"frame":0,"max_frame":100}),
-    dcc.Interval(id="video-interval",interval=60,n_intervals=0,disabled=True),
 ])
 
 
@@ -870,21 +841,18 @@ def save_session(n_clicks):
         return no_update
 
 
-# ── Omni type selector + video controls visibility ────────────────────────────
+# ── Omni type selector visibility ────────────────────────────────────────────
 @app.callback(
     Output("omni-type-container","style"),
-    Output("video-controls-container","style"),
     Input("btn-vpp-omni","n_clicks"),Input("btn-lat","n_clicks"),
     Input("btn-vpp-uni","n_clicks"),Input("btn-vpp-bip","n_clicks"),
     Input("btn-ror","n_clicks"),Input("btn-clear-map","n_clicks"),
-    Input("btn-video-map","n_clicks"),
     prevent_initial_call=True,
 )
 def toggle_panels(*_):
     tid = ctx.triggered_id
-    omni_vis  = {"display":"block","marginBottom":"4px"} if tid=="btn-vpp-omni" else {"display":"none","marginBottom":"4px"}
-    video_vis = {"display":"flex","marginBottom":"4px","flexWrap":"wrap","alignItems":"center","gap":"6px"} if tid=="btn-video-map" else {"display":"none"}
-    return omni_vis, video_vis
+    omni_vis = {"display":"block","marginBottom":"4px"} if tid=="btn-vpp-omni" else {"display":"none","marginBottom":"4px"}
+    return omni_vis
 
 
 # ── Toggle triangular sub-config visibility ──────────────────────────────────
@@ -1681,209 +1649,8 @@ def apply_interval(apply_n, reset_n, t0_input, t1_input, selected_data):
             False)
 
 
-# ── Video: precompute all frames as Plotly animation  ──────────────────────────
-@app.callback(
-    Output("geo-graph","figure", allow_duplicate=True),
-    Output("video-compute-status","children"),
-    Input("btn-video-compute","n_clicks"),
-    State("video-interp-toggle","value"),
-    State("video-sigma","value"),
-    State("video-cmin","value"),
-    State("video-cmax","value"),
-    State("video-speed","value"),
-    prevent_initial_call=True,
-)
-def precompute_video(n_clicks, interp_toggle, sigma, cmin, cmax, speed_val):
-    if not n_clicks or SIGNALS is None or GEOMETRY is None:
-        return no_update, "Load geometry + signals first"
-    try:
-        verts = GEOMETRY["vertices"]
-        faces = GEOMETRY["faces"]
-        dt    = SIGNALS["data_table"]
-        rov   = SIGNALS["signals"]["rov trace"]
-        fs_hz = float(dt["Sample rate"].dropna().unique()[0])
-
-        # Collect electrode positions and all signals
-        ex, ey, ez, all_sigs = [], [], [], []
-        for idx in dt.index:
-            try:
-                sig = get_signal_array(rov.loc[idx])
-                ex.append(float(dt.loc[idx,"roving x"]))
-                ey.append(float(dt.loc[idx,"roving y"]))
-                ez.append(float(dt.loc[idx,"roving z"]))
-                all_sigs.append(sig.astype(float))
-            except: pass
-        if not ex:
-            return no_update, "No electrode data found"
-
-        pts_xyz = np.column_stack([ex, ey, ez])
-        n_frames = len(all_sigs[0])
-        vmin = float(cmin) if cmin is not None else -3.0
-        vmax = float(cmax) if cmax is not None else  3.0
-        do_interp = interp_toggle and "interp" in interp_toggle
-        sig_arr = np.array(all_sigs)  # shape (n_elec, n_samples)
-        ax = dict(gridcolor=GEO_GRID, zerolinecolor=GEO_GRID, showbackground=True,
-                  backgroundcolor=GEO_BG, tickfont=dict(color=TEXT))
-
-        # Step: subsample to max 200 frames for performance
-        step = max(1, n_frames // 200)
-        frame_indices = list(range(0, n_frames, step))
-
-        # Build base figure (frame 0)
-        vals0 = sig_arr[:, 0]
-        colorbar_cfg = dict(title=dict(text="mV", font=dict(size=10)),
-                            thickness=14, nticks=6,
-                            tickfont=dict(color=TEXT, size=9))
-
-        if do_interp:
-            vc0 = interpolate_on_mesh(verts, faces, pts_xyz, vals0,
-                                      sigma=sigma if sigma else 2.0)
-            base_data = [
-                go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
-                          i=faces["v1"], j=faces["v2"], k=faces["v3"],
-                          opacity=0.10, color="#aaaaaa",
-                          showlegend=False, showscale=False),
-                go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
-                          i=faces["v1"], j=faces["v2"], k=faces["v3"],
-                          intensity=vc0, intensitymode="vertex",
-                          colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
-                          opacity=0.90, showscale=True,
-                          colorbar=colorbar_cfg, showlegend=False),
-            ]
-        else:
-            base_data = [
-                go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
-                          i=faces["v1"], j=faces["v2"], k=faces["v3"],
-                          opacity=0.25, color="#aaaaaa",
-                          showlegend=False, showscale=False),
-                go.Scatter3d(x=ex, y=ey, z=ez, mode="markers",
-                             marker=dict(size=7, color=vals0.tolist(),
-                                         colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
-                                         colorbar=colorbar_cfg),
-                             showlegend=False),
-            ]
-
-        # Build animation frames
-        anim_frames = []
-        slider_steps = []
-        interval_ms = int(speed_val) if speed_val else 60
-
-        for fi in frame_indices:
-            vals_f = sig_arr[:, fi]
-            t_ms   = fi * 1000.0 / fs_hz
-            if do_interp:
-                vc = interpolate_on_mesh(verts, faces, pts_xyz, vals_f,
-                                         sigma=sigma if sigma else 2.0)
-                frame_data = [
-                    go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
-                              i=faces["v1"], j=faces["v2"], k=faces["v3"],
-                              opacity=0.10, color="#aaaaaa",
-                              showlegend=False, showscale=False),
-                    go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
-                              i=faces["v1"], j=faces["v2"], k=faces["v3"],
-                              intensity=vc.tolist(), intensitymode="vertex",
-                              colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
-                              opacity=0.90, showscale=True,
-                              colorbar=colorbar_cfg, showlegend=False),
-                ]
-            else:
-                frame_data = [
-                    go.Mesh3d(x=verts["x"], y=verts["y"], z=verts["z"],
-                              i=faces["v1"], j=faces["v2"], k=faces["v3"],
-                              opacity=0.25, color="#aaaaaa",
-                              showlegend=False, showscale=False),
-                    go.Scatter3d(x=ex, y=ey, z=ez, mode="markers",
-                                 marker=dict(size=7, color=vals_f.tolist(),
-                                             colorscale=CMAP_DIVERGENT, cmin=vmin, cmax=vmax,
-                                             colorbar=colorbar_cfg),
-                                 showlegend=False),
-                ]
-            frame_name = f"f{fi}"
-            anim_frames.append(go.Frame(data=frame_data, name=frame_name,
-                                        layout=go.Layout(title_text=f"t = {t_ms:.1f} ms")))
-            slider_steps.append(dict(
-                args=[[frame_name],
-                      {"frame":{"duration":interval_ms,"redraw":True},
-                       "mode":"immediate","transition":{"duration":0}}],
-                label=f"{t_ms:.0f}",
-                method="animate",
-            ))
-
-        fig = go.Figure(data=base_data, frames=anim_frames)
-        fig.update_layout(
-            scene=dict(bgcolor=GEO_BG,
-                       xaxis=dict(title=dict(text="x",font=dict(color=TEXT)),**ax),
-                       yaxis=dict(title=dict(text="y",font=dict(color=TEXT)),**ax),
-                       zaxis=dict(title=dict(text="z",font=dict(color=TEXT)),**ax)),
-            paper_bgcolor=PANEL, font_color=TEXT,
-            margin=dict(l=0,r=0,b=60,t=35), showlegend=False,
-            title=dict(text="Unipolar potential – t = 0.0 ms", font=dict(color=TEXT,size=12)),
-            updatemenus=[dict(
-                type="buttons", showactive=False,
-                x=0.05, y=0.02, xanchor="left", yanchor="bottom",
-                buttons=[
-                    dict(label="▶",
-                         method="animate",
-                         args=[None, {"frame":{"duration":interval_ms,"redraw":True},
-                                      "fromcurrent":True,"transition":{"duration":0}}]),
-                    dict(label="⏸",
-                         method="animate",
-                         args=[[None], {"frame":{"duration":0,"redraw":False},
-                                        "mode":"immediate","transition":{"duration":0}}]),
-                ],
-                bgcolor=PANEL, bordercolor=BORDER, font=dict(color=TEXT, size=12),
-            )],
-            sliders=[dict(
-                active=0,
-                currentvalue=dict(prefix="t (ms): ", font=dict(color=TEXT,size=11)),
-                pad=dict(b=5,t=5),
-                steps=slider_steps,
-                bgcolor=BORDER, font=dict(color=TEXT,size=9),
-            )],
-        )
-        n_computed = len(frame_indices)
-        return fig, f"✅ {n_computed} frames computed"
-
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return no_update, f"❌ {e}"
 
 
-# ── Video: legacy interval play/pause (unused but keeps IDs alive) ─────────────
-@app.callback(
-    Output("video-interval","disabled"),
-    Output("store-video-state","data"),
-    Input("btn-video-play","n_clicks"),
-    Input("btn-video-pause","n_clicks"),
-    Input("btn-video-reset","n_clicks"),
-    State("store-video-state","data"),
-    prevent_initial_call=True,
-)
-def control_video(play_n, pause_n, reset_n, state):
-    state = state or {"playing":False,"frame":0,"max_frame":100}
-    tid = ctx.triggered_id
-
-    if tid == "btn-video-play":
-        state["playing"] = True
-        return False, state
-
-    if tid == "btn-video-pause":
-        state["playing"] = False
-        return True, state
-
-    if tid == "btn-video-reset":
-        state["playing"] = False
-        state["frame"]   = 0
-        if SIGNALS is not None:
-            dt  = SIGNALS["data_table"]
-            rov = SIGNALS["signals"]["rov trace"]
-            if len(dt):
-                idx0 = dt.index[0]
-                sig  = get_signal_array(rov.loc[idx0])
-                state["max_frame"] = len(sig) - 1
-        return True, state
-
-    return no_update, state
 
 
 
